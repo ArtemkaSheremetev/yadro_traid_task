@@ -61,6 +61,11 @@ sudo apt install -y build-essential linux-headers-$(uname -r)
 ```bash
 make
 ```
+Для очистки:
+
+```bash
+make clean
+```
 
 После сборки рядом с исходником появится:
 
@@ -71,7 +76,7 @@ dm-racewarn.ko
 ## Загрузка модуля
 
 ```bash
-sudo bash ./scripts/load-racewarn.sh
+sudo bash scripts/load-racewarn.sh
 ```
 
 Скрипт:
@@ -83,7 +88,7 @@ sudo bash ./scripts/load-racewarn.sh
 ## Выгрузка модуля из ядра
 
 ```bash
-sudo bash ./scripts/unload-racewarn.sh
+sudo bash scripts/unload-racewarn.sh
 ```
 
 ## Тестирование
@@ -91,7 +96,7 @@ sudo bash ./scripts/unload-racewarn.sh
 Тест:
 
 ```bash
-sudo bash ./tests/test-racewarn.sh
+sudo bash tests/test-racewarn.sh
 ```
 
 Скрипт:
