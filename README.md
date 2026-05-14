@@ -4,43 +4,48 @@
 обнаруживает гонки на пересекающихся незавершённых I/O-запросах к блочному
 устройству и пишет предупреждения в журнал ядра.
 
-Решение сделано на базе Linux kernel `6.8`.
+- Решение сделано на основе Linux kernel `6.8`.
+
+- Тестировал на `6.8.0-100-generic` - Linux Mint 22.1. 
+
+- Скачать исходники ядра можно так: 
+``` bash
+git clone --depth 1 --branch v6.8 https://github.com/torvalds/linux.git
+```
 
 ## Ветки
 
-В репозитории есть две ветки с одной и той же логикой target-а, но с разными
+В репозитории есть две ветки с одной и той же логикой target'а, но с разными
 структурами данных для хранения активных интервалов:
 
 - `dm-racewarn-ll` — реализация через `struct list_head` выполняется за `O(n)`, где `n` — количество `block io` запросов в списке
 - `dm-racewarn-tree` — реализация через `interval_tree` - поиск пересечений эффективнее линейного обхода списка за счёт хранения активных диапазонов в интервальном дереве 
 
-Эта ветка — `dm-racewarn-tree`, в ней используется `interval_tree`.
+#### Эта ветка — `dm-racewarn-tree`, в ней используется `interval_tree`. 
 
 ## Получение исходников
 
 Если нужна версия на `interval_tree`:
 
 ```bash
-git clone --depth 1 --branch dm-racewarn-tree https://github.com/ArtemkaSheremetev/linux.git
+git clone --depth 1 --branch dm-racewarn-tree https://github.com/ArtemkaSheremetev/yadro_traid_task.git
 ```
 
 Если нужна версия на `linked list`:
 
 ```bash
-git clone --depth 1 --branch dm-racewarn-ll https://github.com/ArtemkaSheremetev/linux.git
+git clone --depth 1 --branch dm-racewarn-ll https://github.com/ArtemkaSheremetev/yadro_traid_task.git
 ```
 
 ## Состав решения
 
-- `dm-racewarn.c` — код target-а `racewarn`
+- `dm-racewarn.c` — код target'а `racewarn`
 - `Makefile` — сборка внешнего модуля ядра
-- `scripts/load-racewarn.sh` — загрузка модуля и проверка регистрации target-а
+- `scripts/load-racewarn.sh` — загрузка модуля и проверка регистрации target'а
 - `scripts/unload-racewarn.sh` — выгрузка модуля
 - `tests/test-racewarn.sh` — smoke test
 
 ## Зависимости
-
-Инструкции ниже ориентированы на Ubuntu 24.04.
 
 Для сборки внешнего модуля нужны:
 
@@ -75,9 +80,15 @@ sudo ./scripts/load-racewarn.sh
 - загружает `dm-racewarn.ko`, если модуль ещё не загружен
 - проверяет, что target `racewarn` появился в `dmsetup targets`
 
+## Выгрузка модуля из ядра
+
+```bash
+sudo ./scripts/unload-racewarn.sh
+```
+
 ## Тестирование
 
-Полный smoke test:
+Тест:
 
 ```bash
 sudo ./tests/test-racewarn.sh
@@ -106,12 +117,6 @@ dd oflag=direct if=/dev/urandom of=/dev/mapper/my0 bs=8k count=1 seek=17
 - второй запрос записывает диапазон `[272, 288)`
 - диапазоны пересекаются, поэтому target должен вывести предупреждение
 
-## Выгрузка модуля
-
-```bash
-sudo ./scripts/unload-racewarn.sh
-```
-
 ## Правила обнаружения гонок
 
 Target сообщает о нарушениях следующего контракта:
@@ -132,9 +137,11 @@ device-mapper: racewarn: race (write-after-read): write [256,320) conflicts with
 ## На что опирался
 
 - Разобрался с моделью работы `device-mapper`.
-- Посмотрел, как устроены стандартные target-ы `dm-zero` и `dm-linear`.
-- Основным ориентиром по написанию кожа и был `include/linux/device-mapper.h` именно он задаёт интерфейс для работы.
-- Разобрался, что `device-mapper` использует `/dev/mapper/control` и взаимодействует с userspace через `ioctl()`.
-- Для хранения активных диапазонов в этой ветке использовал `interval_tree`.
+- Посмотрел и почитал про LVM, узнал что он как раз использует `device-mapper`
+- Посмотрел, как устроены стандартные target'ы `dm-zero` и `dm-linear`.
+- Основным ориентиром по написанию кода и был `include/linux/device-mapper.h` именно он задаёт интерфейс для работы.
+- Разобрался, что `device-mapper` использует `/dev/mapper/control` и взаимодействует с userspace через системный вызов `ioctl()`.
+- Для хранения активных диапазонов в этой ветке использовал `interval_tree` структуру линукс (сначала думал делать свою, но оказалось что в ядре она есть!!!).
 - Для синхронизации доступа к общей структуре использовал `spin_lock_irqsave()` / `spin_unlock_irqrestore()`.
 - `spinlock` был выбран вместо `mutex'а`, потому что здесь защищается очень короткая критическая секция в I/O path: обход дерева активных запросов, вставка нового интервала и удаление завершённого. Для такой секции выгоднее активное ожидание на короткое время, чем блокировка, которая может усыпить поток и привести к дополнительным накладным расходам на планирование и переключение контекста.
+- При оформлении `target'а` как отдельного модуля ориентировался на `dm-zero`. Для регистрации и выгрузки target-а использовал макрос `module_dm(racewarn)`.
