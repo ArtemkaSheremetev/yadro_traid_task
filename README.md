@@ -1,4 +1,4 @@
-# dm-racewarn
+# dm-racewarn (Версия с list head)
 
 `dm-racewarn` — внешний модуль ядра Linux для `device-mapper`, который
 обнаруживает гонки на пересекающихся незавершённых I/O-запросах к блочному
@@ -21,7 +21,7 @@ git clone --depth 1 --branch v6.8 https://github.com/torvalds/linux.git
 - `dm-racewarn-ll` — реализация через `struct list_head` выполняется за `O(n)`, где `n` — количество `block io` запросов в списке
 - `dm-racewarn-tree` — реализация через `interval_tree` - поиск пересечений эффективнее линейного обхода списка за счёт хранения активных диапазонов в интервальном дереве 
 
-#### Эта ветка — `dm-racewarn-tree`, в ней используется `interval_tree`. 
+#### Эта ветка — `dm-racewarn-ll`, в ней используется `list_head`. 
 
 ## Получение исходников
 
@@ -71,7 +71,7 @@ dm-racewarn.ko
 ## Загрузка модуля
 
 ```bash
-sudo ./scripts/load-racewarn.sh
+sudo bash ./scripts/load-racewarn.sh
 ```
 
 Скрипт:
@@ -83,7 +83,7 @@ sudo ./scripts/load-racewarn.sh
 ## Выгрузка модуля из ядра
 
 ```bash
-sudo ./scripts/unload-racewarn.sh
+sudo bash ./scripts/unload-racewarn.sh
 ```
 
 ## Тестирование
@@ -91,7 +91,7 @@ sudo ./scripts/unload-racewarn.sh
 Тест:
 
 ```bash
-sudo ./tests/test-racewarn.sh
+sudo bash ./tests/test-racewarn.sh
 ```
 
 Скрипт:

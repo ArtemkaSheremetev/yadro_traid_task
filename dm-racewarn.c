@@ -2,7 +2,7 @@
 #include <linux/blkdev.h>
 #include <linux/device-mapper.h>
 #include <linux/init.h>
-#include <linux/interval_tree_generic.h>
+#include <linux/list.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
@@ -12,9 +12,8 @@
 struct racewarn_io {
 	sector_t start;
 	sector_t len;
-	sector_t __subtree_last;
 	bool is_write;
-	struct rb_node interval_node;
+	struct list_head node;
 };
 
 struct racewarn_per_bio_data {
@@ -25,16 +24,18 @@ struct racewarn_c {
 	struct dm_dev *dev;
 	sector_t start;
 	spinlock_t lock;
-	struct rb_root_cached active_ios;
+	struct list_head list;
 	unsigned long long race_count;
 };
 
-#define START(node) ((node)->start)
-#define LAST(node) ((node)->start + (node)->len - 1)
+static bool racewarn_overlaps(sector_t start_a, sector_t len_a,
+			      sector_t start_b, sector_t len_b)
+{
+	sector_t end_a = start_a + len_a;
+	sector_t end_b = start_b + len_b;
 
-INTERVAL_TREE_DEFINE(struct racewarn_io, interval_node, sector_t,
-		     __subtree_last, START, LAST, static inline,
-		     racewarn_io_interval_tree)
+	return start_a < end_b && start_b < end_a;
+}
 
 static bool racewarn_conflicts(bool new_is_write, bool active_is_write)
 {
@@ -63,14 +64,9 @@ static sector_t racewarn_map_sector(struct dm_target *ti, sector_t bi_sector)
 	return rc->start + dm_target_offset(ti, bi_sector);
 }
 
-static sector_t racewarn_io_last(const struct racewarn_io *rio)
-{
-	return rio->start + rio->len - 1;
-}
-
 static void racewarn_warn_conflict(struct racewarn_c *rc, sector_t start,
 				   sector_t len, bool new_is_write,
-				   sector_t active_start, sector_t active_last,
+				   sector_t active_start, sector_t active_len,
 				   bool active_is_write,
 				   unsigned int total_conflicts)
 {
@@ -83,7 +79,7 @@ static void racewarn_warn_conflict(struct racewarn_c *rc, sector_t start,
 			(unsigned long long)(start + len),
 			active_is_write ? "write" : "read",
 			(unsigned long long)active_start,
-			(unsigned long long)(active_last + 1),
+			(unsigned long long)(active_start + active_len),
 			rc->dev->bdev, total_conflicts);
 		return;
 	}
@@ -95,7 +91,7 @@ static void racewarn_warn_conflict(struct racewarn_c *rc, sector_t start,
 		(unsigned long long)start, (unsigned long long)(start + len),
 		active_is_write ? "write" : "read",
 		(unsigned long long)active_start,
-		(unsigned long long)(active_last + 1), rc->dev->bdev);
+		(unsigned long long)(active_start + active_len), rc->dev->bdev);
 }
 
 static int racewarn_ctr(struct dm_target *ti, unsigned int argc, char **argv)
@@ -134,7 +130,7 @@ static int racewarn_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	}
 
 	spin_lock_init(&rc->lock);
-	rc->active_ios = RB_ROOT_CACHED;
+	INIT_LIST_HEAD(&rc->list);
 
 	ti->private = rc;
 	ti->per_io_data_size = sizeof(struct racewarn_per_bio_data);
@@ -153,11 +149,12 @@ bad:
 static void racewarn_dtr(struct dm_target *ti)
 {
 	struct racewarn_c *rc = ti->private;
-	struct racewarn_io *tracked, *next;
+	struct racewarn_io *tracked, *tmp;
 
-	rbtree_postorder_for_each_entry_safe(
-		tracked, next, &rc->active_ios.rb_root, interval_node)
+	list_for_each_entry_safe(tracked, tmp, &rc->list, node) {
+		list_del(&tracked->node);
 		kfree(tracked);
+	}
 
 	dm_put_device(ti, rc->dev);
 	kfree(rc);
@@ -172,8 +169,7 @@ static int racewarn_track_bio(struct dm_target *ti, struct bio *bio)
 	sector_t start;
 	sector_t len;
 	sector_t conflict_start = 0;
-	sector_t conflict_last = 0;
-	sector_t last;
+	sector_t conflict_len = 0;
 	unsigned long flags;
 	unsigned int conflicts = 0;
 	bool conflict_is_write = false;
@@ -191,7 +187,6 @@ static int racewarn_track_bio(struct dm_target *ti, struct bio *bio)
 		return 0;
 
 	start = racewarn_map_sector(ti, bio->bi_iter.bi_sector);
-	last = start + len - 1;
 	is_write = bio_op(bio) == REQ_OP_WRITE;
 
 	tracked = kmalloc(sizeof(*tracked), GFP_NOIO);
@@ -201,19 +196,18 @@ static int racewarn_track_bio(struct dm_target *ti, struct bio *bio)
 	tracked->start = start;
 	tracked->len = len;
 	tracked->is_write = is_write;
-	RB_CLEAR_NODE(&tracked->interval_node);
+	INIT_LIST_HEAD(&tracked->node);
 
 	spin_lock_irqsave(&rc->lock, flags);
-	for (active = racewarn_io_interval_tree_iter_first(&rc->active_ios,
-							   start, last);
-	     active; active = racewarn_io_interval_tree_iter_next(active, start,
-								  last)) {
+	list_for_each_entry(active, &rc->list, node) {
+		if (!racewarn_overlaps(start, len, active->start, active->len))
+			continue;
 		if (!racewarn_conflicts(is_write, active->is_write))
 			continue;
 
 		if (!has_conflict) {
 			conflict_start = active->start;
-			conflict_last = racewarn_io_last(active);
+			conflict_len = active->len;
 			conflict_is_write = active->is_write;
 			has_conflict = true;
 		}
@@ -221,12 +215,12 @@ static int racewarn_track_bio(struct dm_target *ti, struct bio *bio)
 		conflicts++;
 		rc->race_count++;
 	}
-	racewarn_io_interval_tree_insert(tracked, &rc->active_ios);
+	list_add_tail(&tracked->node, &rc->list);
 	spin_unlock_irqrestore(&rc->lock, flags);
 
 	if (has_conflict)
 		racewarn_warn_conflict(rc, start, len, is_write, conflict_start,
-				       conflict_last, conflict_is_write,
+				       conflict_len, conflict_is_write,
 				       conflicts);
 
 	pbd->tracked_io = tracked;
@@ -267,7 +261,7 @@ static int racewarn_end_io(struct dm_target *ti, struct bio *bio,
 		return DM_ENDIO_DONE;
 
 	spin_lock_irqsave(&rc->lock, flags);
-	racewarn_io_interval_tree_remove(tracked, &rc->active_ios);
+	list_del(&tracked->node);
 	spin_unlock_irqrestore(&rc->lock, flags);
 
 	kfree(tracked);

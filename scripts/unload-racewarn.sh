@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 
 if [ "$(id -u)" -ne 0 ]; then
 	echo "Run this script with sudo"
