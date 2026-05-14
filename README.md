@@ -62,6 +62,12 @@ sudo apt install -y build-essential linux-headers-$(uname -r)
 make
 ```
 
+Для очистки: 
+```bash
+make clean
+```
+
+
 После сборки рядом с исходником появится:
 
 ```bash
